@@ -1,0 +1,39 @@
+name: Build earnings dates from SEC EDGAR
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 5 1,4,7,10 *"   # quarterly, 5th day of Jan/Apr/Jul/Oct
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download SEC submissions bulk file
+        run: |
+          curl -sSfL --retry 3 \
+            -A "SnipeR research 305707718+BenReingold@users.noreply.github.com" \
+            -o /tmp/submissions.zip \
+            https://www.sec.gov/Archives/edgar/daily-index/bulkdata/submissions.zip
+          ls -l /tmp/submissions.zip
+
+      - name: Build tables
+        run: python3 scripts/build_earnings_dates.py /tmp/submissions.zip earnings_dates
+
+      - name: Commit if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add earnings_dates
+          if git diff --cached --quiet; then
+            echo "No changes"
+          else
+            git commit -m "Update earnings dates from SEC EDGAR ($(date -u +%F))"
+            git push
+          fi
