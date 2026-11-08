@@ -16,9 +16,12 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Download SEC submissions bulk file
+        env:
+          SEC_CONTACT: ${{ secrets.SEC_CONTACT }}
         run: |
+          test -n "$SEC_CONTACT" || { echo "Secret SEC_CONTACT is missing"; exit 1; }
           curl -sSfL --retry 3 \
-            -A "SnipeR research 305707718+BenReingold@users.noreply.github.com" \
+            -A "$SEC_CONTACT" \
             -o /tmp/submissions.zip \
             https://www.sec.gov/Archives/edgar/daily-index/bulkdata/submissions.zip
           ls -l /tmp/submissions.zip
