@@ -76,34 +76,39 @@ class SnipeRMapProbe2(QCAlgorithm):
         ratio = v / med
         out = []
         for t, x in ratio.items():
-            if x == x and x >= 2.5:
+            if x == x and x >= 2.0:
                 out.append(t.date().toordinal())
         return out
 
-    def vote(self, r, by_day, n_in_range):
+    def vote(self, r, by_day, dates, true_cik=None):
+        """Score each candidate CIK by the share of its 8-K 2.02 filings (in the
+        symbol's active range) followed by a volume spike within 0-3 days."""
         sp = self.spikes(r["sym"], r["first"], r["last"])
         if not sp:
-            return None, 0, 0, 0
-        votes = {}
+            return None, 0, 0, 0, None
+        sps = set(sp)
+        cands = set()
         for s in sp:
-            seen = set()
             for back in (0, 1, 2, 3):
-                for c in by_day.get(s - back, ()):
-                    if c not in seen:
-                        seen.add(c)
-                        votes[c] = votes.get(c, 0) + 1
-        best = []
+                cands.update(by_day.get(s - back, ()))
         lo, hi = r["first"].date().toordinal(), r["last"].date().toordinal()
-        for c, v in votes.items():
-            n = n_in_range(c, lo, hi)
-            if n >= 4:
-                best.append((v / n, v, c))
-        if not best:
-            return None, 0, 0, len(sp)
-        best.sort(reverse=True)
-        top = best[0]
-        second = best[1][0] if len(best) > 1 else 0.0
-        return top[2], round(top[0], 2), round(second, 2), len(sp)
+        scored = []
+        true_score = None
+        for c in cands | ({true_cik} if true_cik else set()):
+            ds = dates.get(c, [])
+            inr = ds[bisect.bisect_left(ds, lo):bisect.bisect_right(ds, hi)]
+            if len(inr) < 6:
+                continue
+            hits = sum(1 for x in inr if (x in sps or x + 1 in sps or x + 2 in sps or x + 3 in sps))
+            sc = hits / len(inr)
+            if c == true_cik:
+                true_score = sc
+            scored.append((sc, c))
+        if not scored:
+            return None, 0, 0, len(sp), true_score
+        scored.sort(reverse=True)
+        second = scored[1][0] if len(scored) > 1 else 0.0
+        return scored[0][1], round(scored[0][0], 2), round(second, 2), len(sp), true_score
 
     def on_end_of_algorithm(self):
         dates = {}
@@ -115,10 +120,6 @@ class SnipeRMapProbe2(QCAlgorithm):
                 by_day.setdefault(o, []).append(row["cik"])
         for v in dates.values():
             v.sort()
-
-        def n_in_range(c, lo, hi):
-            ds = dates.get(c, [])
-            return bisect.bisect_right(ds, hi) - bisect.bisect_left(ds, lo)
 
         nofund = [r for r in self.sec.values() if not r["fund"]]
         withcik = [r for r in self.sec.values() if r["cik"] and r["cik"] in dates]
@@ -134,11 +135,15 @@ class SnipeRMapProbe2(QCAlgorithm):
 
         # Calibrate the vote on symbols whose CIK is known.
         random.seed(7)
-        sample = random.sample(withcik, min(150, len(withcik)))
+        sample = random.sample(withcik, min(200, len(withcik)))
         ok = wrong = none = 0
+        ts, bo = [], []
         for r in sample:
-            c, s1, s2, nsp = self.vote(r, by_day, n_in_range)
-            accept = c is not None and s1 >= 0.5 and s1 >= 2 * s2
+            c, s1, s2, nsp, tsc = self.vote(r, by_day, dates, r["cik"])
+            if tsc is not None:
+                ts.append(tsc)
+                bo.append(s2 if c == r["cik"] else s1)
+            accept = c is not None and s1 >= 0.6 and s2 <= 0.4
             if not accept:
                 none += 1
             elif c == r["cik"]:
@@ -146,14 +151,17 @@ class SnipeRMapProbe2(QCAlgorithm):
             else:
                 wrong += 1
         self.log(f"MAP2 calib n={len(sample)} accepted_right={ok} accepted_wrong={wrong} not_accepted={none}")
+        ts.sort(); bo.sort()
+        qq = lambda a, p: round(a[int(p * (len(a) - 1))], 2) if a else None
+        self.log(f"MAP2 calib true_score p10={qq(ts,.1)} p25={qq(ts,.25)} p50={qq(ts,.5)} | best_other p50={qq(bo,.5)} p90={qq(bo,.9)} max={qq(bo,1)}")
 
         # Apply to symbols without Morningstar reference data.
         res = {"accepted": 0, "rejected": 0, "nospikes": 0}
         acc_years = {}
         lines = []
-        for r in nofund[:2500]:
-            c, s1, s2, nsp = self.vote(r, by_day, n_in_range)
-            accept = c is not None and s1 >= 0.5 and s1 >= 2 * s2
+        for r in nofund[:1500]:
+            c, s1, s2, nsp, _ = self.vote(r, by_day, dates)
+            accept = c is not None and s1 >= 0.6 and s2 <= 0.4
             if nsp == 0:
                 res["nospikes"] += 1
             elif accept:
@@ -164,7 +172,7 @@ class SnipeRMapProbe2(QCAlgorithm):
                 res["rejected"] += 1
             if r["t"] & AUDIT:
                 lines.append(f"{sorted(r['t'])[:3]} {r['first'].date()}..{r['last'].date()} spikes={nsp} best={c} s1={s1} s2={s2} accept={accept}")
-        self.log(f"MAP2 nofund vote {res} (of {min(len(nofund), 2500)})")
+        self.log(f"MAP2 nofund vote {res} (of {min(len(nofund), 1500)})")
         self.log("MAP2 nofund accepted by_year " + " ".join(f"{y}:{v}" for y, v in sorted(acc_years.items())))
         for line in lines[:30]:
             self.log("MAP2 audit " + line)
