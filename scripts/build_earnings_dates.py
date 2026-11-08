@@ -8,7 +8,8 @@ Item numbers exist from August 2004.
 
 Outputs (CSV, plain text so QuantConnect's download() can read them):
   earnings_dates/8k_202.csv   cik,filing_date,acceptance,form,accession
-  earnings_dates/entities.csv cik,name,tickers,exchanges,sic
+  earnings_dates/entities.csv cik,name,tickers,exchanges,sic,former_names
+  (former_names: "name~from~to" joined by "|", dates as YYYY-MM-DD)
 Only entities with at least one 8-K item 2.02 are written.
 
 Note: SEC's acceptanceDateTime ends in "Z" but is Eastern time. It is
@@ -72,6 +73,10 @@ def main():
                     "|".join(data.get("tickers", []) or []),
                     "|".join(x or "" for x in (data.get("exchanges", []) or [])),
                     data.get("sic", ""),
+                    "|".join(
+                        f'{(x.get("name") or "").replace("|", " ")}~{(x.get("from") or "")[:10]}~{(x.get("to") or "")[:10]}'
+                        for x in (data.get("formerNames", []) or [])
+                    ),
                 )
             for row in rows_from(block):
                 events[cik].add(row)
@@ -88,9 +93,9 @@ def main():
 
     with open(os.path.join(OUT_DIR, "entities.csv"), "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["cik", "name", "tickers", "exchanges", "sic"])
+        w.writerow(["cik", "name", "tickers", "exchanges", "sic", "former_names"])
         for cik in sorted(events):
-            w.writerow([int(cik), *entities.get(cik, ("", "", "", ""))])
+            w.writerow([int(cik), *entities.get(cik, ("", "", "", "", ""))])
 
     years = defaultdict(int)
     for rows in events.values():
