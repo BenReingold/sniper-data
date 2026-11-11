@@ -1,0 +1,14 @@
+eps,0,EarningsPerShareDiluted
+eps,1,EarningsPerShareBasic
+eps,2,EarningsPerShareBasicAndDiluted
+revenue,0,Revenues
+revenue,1,SalesRevenueNet
+revenue,2,RevenueFromContractWithCustomerExcludingAssessedTax
+revenue,3,RevenueFromContractWithCustomerIncludingAssessedTax
+revenue,4,SalesRevenueGoodsNet
+revenue,5,SalesRevenueServicesNet
+revenue,6,RevenuesNetOfInterestExpense
+revenue,7,InterestAndDividendIncomeOperating
+netincome,0,NetIncomeLoss
+netincome,1,ProfitLoss
+netincome,2,NetIncomeLossAvailableToCommonStockholdersBasic
