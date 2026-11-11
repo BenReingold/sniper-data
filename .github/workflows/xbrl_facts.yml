@@ -1,0 +1,37 @@
+name: Build fundamentals from SEC XBRL facts
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "41 4 6 1,4,7,10 *"   # quarterly, day after the date table
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download SEC companyfacts bulk file
+        env:
+          SEC_CONTACT: ${{ secrets.SEC_CONTACT }}
+        run: |
+          test -n "$SEC_CONTACT" || { echo "Secret SEC_CONTACT is missing"; exit 1; }
+          curl -sSfL --retry 3 -A "$SEC_CONTACT" -o /tmp/companyfacts.zip \
+            https://www.sec.gov/Archives/edgar/daily-index/xbrl/companyfacts.zip
+          ls -l /tmp/companyfacts.zip
+
+      - name: Build tables
+        run: python3 scripts/build_xbrl_facts.py /tmp/companyfacts.zip fundamentals
+
+      - name: Commit if changed
+        run: |
+          ls -l fundamentals
+          for f in fundamentals/*.csv; do s=$(stat -c %s "$f"); if [ "$s" -gt 95000000 ]; then echo "$f too large for GitHub ($s bytes)"; exit 1; fi; done
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add fundamentals
+          git diff --cached --quiet || { git commit -m "Update XBRL fundamentals ($(date -u +%F))"; git pull --rebase -q; git push; }
