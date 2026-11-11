@@ -24,7 +24,7 @@ OUT = "earnings_dates/cik_tickers.csv"
 TIME_BUDGET = int(os.environ.get("TIME_BUDGET", 5 * 3600))
 PAUSE = 0.13  # about 7 requests per second, under SEC's 10 per second
 
-EXCH = r"(NYSE American|NYSE Amex|NYSE MKT|NYSE Arca|NYSE|Nasdaq[A-Za-z /]{0,20}?|NASDAQ[A-Za-z /]{0,20}?|AMEX|American Stock Exchange|New York Stock Exchange)"
+EXCH = r"(NYSE American|NYSE Amex|NYSE MKT|NYSE Arca|NYSE|Nasdaq[A-Za-z /]{0,32}?|NASDAQ[A-Za-z /]{0,32}?|AMEX|American Stock Exchange|New York Stock Exchange)"
 PAT = re.compile(EXCH + r"\s*[:\-]\s*([A-Z]{1,5}(?:\.[A-Z])?)\b")
 
 last_call = [0.0]
@@ -93,10 +93,21 @@ def main():
             if k not in last or item > last[k]:
                 last[k] = item
     jobs = []
-    for k in sorted(first, key=int):
-        jobs.append((k, *first[k]))
-        if last[k] != first[k]:
-            jobs.append((k, *last[k]))
+    if os.environ.get("MODE") == "yearly":
+        per_year = {}
+        with open(SRC) as f:
+            for row in csv.DictReader(f):
+                key = (row["cik"], row["filing_date"][:4])
+                item = (row["filing_date"], row["accession"])
+                if key not in per_year or item < per_year[key]:
+                    per_year[key] = item
+        for (k, _), item in sorted(per_year.items(), key=lambda x: (int(x[0][0]), x[0][1])):
+            jobs.append((k, *item))
+    else:
+        for k in sorted(first, key=int):
+            jobs.append((k, *first[k]))
+            if last[k] != first[k]:
+                jobs.append((k, *last[k]))
     done = set()
     if os.path.exists(OUT):
         with open(OUT) as f:
@@ -121,6 +132,8 @@ def main():
                 f.flush()
                 print(f"{i}/{len(todo)} found={found} elapsed={int(time.time()-t0)}s", flush=True)
     print(f"finished this run: processed={i + 1 if todo else 0} found={found}", flush=True)
+    if todo and i + 1 < len(todo):
+        open("/tmp/more_to_do", "w").write("1")
 
 
 if __name__ == "__main__":
