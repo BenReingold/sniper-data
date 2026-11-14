@@ -60,6 +60,7 @@ def get(url):
 def to_lines(raw, is_html):
     t = raw
     if is_html:
+        t = re.sub(r"\s+", " ", t)
         t = re.sub(r"(?is)<(script|style).*?</\1>", " ", t)
         t = re.sub(r"(?is)<table.*?</table>",
                    lambda m: re.sub(r"(?i)</?(p|div|br|font|span)(\s[^>]*)?/?>", " ", m.group(0)), t)
@@ -85,7 +86,7 @@ def snippet(cik, acc):
     if idx:
         try:
             names = [it["name"] for it in json.loads(idx)["directory"]["item"]]
-            files = [n for n in names if re.search(r"ex[-_]?99", n, re.I) and n.lower().endswith((".htm", ".html", ".txt"))]
+            files = [n for n in names if re.search(r"ex[-_v]*99", n, re.I) and n.lower().endswith((".htm", ".html", ".txt"))]
         except Exception:
             files = []
     lines, src = [], ""
