@@ -102,7 +102,12 @@ def snippet(cik, acc):
             lines = to_lines(t, "<table" in t.lower() or "<TABLE" in t)
             src = acc + ".txt"
     head = lines[:30]
-    rest = [l for l in lines[30:] if KEEP.search(l)][:400]
+    body = lines[30:]
+    keep = set()
+    for i, l in enumerate(body):
+        if KEEP.search(l):
+            keep.update((i, i + 1, i + 2))  # numbers often sit on the next lines in text tables
+    rest = [body[i] for i in sorted(keep) if i < len(body)][:600]
     return {"src": src, "head": head, "lines": rest, "n": len(lines)}
 
 
