@@ -61,8 +61,10 @@ def to_lines(raw, is_html):
     t = raw
     if is_html:
         t = re.sub(r"(?is)<(script|style).*?</\1>", " ", t)
-        t = re.sub(r"(?i)</t[dh]\s*>", " | ", t)
-        t = re.sub(r"(?i)</tr\s*>|<br\s*/?>|</p\s*>|</div\s*>|</h\d\s*>", "\n", t)
+        t = re.sub(r"(?is)<table.*?</table>",
+                   lambda m: re.sub(r"(?i)</?(p|div|br|font|span)(\s[^>]*)?/?>", " ", m.group(0)), t)
+        t = re.sub(r"(?i)<t[dh](\s[^>]*)?>", " | ", t)
+        t = re.sub(r"(?i)<tr(\s[^>]*)?>|</tr\s*>|<br\s*/?>|</p\s*>|</div\s*>|</h\d\s*>", "\n", t)
         t = re.sub(r"<[^>]+>", " ", t)
         t = html.unescape(t)
     t = t.replace("\xa0", " ")
