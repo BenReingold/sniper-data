@@ -17,7 +17,9 @@ NUM = re.compile(r"\(?-?\$?\s?\d[\d,]*\.?\d*\)?|\(?-?\$?\s?\.\d+\)?")
 DASH = re.compile(r"^[—–\-]+$")
 EPS_BAD = re.compile(r"continu|discontinu|adjust|non-?gaap|pro ?forma|operating|excluding|"
                      r"weighted|shares|guidance|outlook|estimate|before|cumulative|"
-                     r"special|items|segment|dividend|book value|%", re.I)
+                     r"special|items|segment|dividend|book value|funds from operations|\bffo\b|"
+                     r"reconcil|outstanding|comparable|\bcore\b|recurring|normaliz|%", re.I)
+YEAR = re.compile(r"\b(19[89]\d|20[0-3]\d)\b")
 REV_ROW = re.compile(r"^(total |consolidated )?(net )?(operating )?(revenues?|sales)(,? net)?"
                      r"( and other income)?\s*:?$|^revenues?,? net$|^net sales and revenues?$|"
                      r"^total (net )?(revenues?|sales)$", re.I)
@@ -74,33 +76,99 @@ def split_row(line):
     return label, [v for v in nums if v is not None]
 
 
+NARR = re.compile(r"(revenues?|sales)[^.$]{0,80}?\$\s?(\d[\d,]*\.?\d*)\s*(thousand|million|billion)", re.I)
+NARR_SCALE = {"thousand": 1e3, "million": 1e6, "billion": 1e9}
+
+
+def unit_from_text(lines, value):
+    """Pick the unit that makes the table value match a revenue amount quoted
+    in the release text (for example "net sales of $626.0 million")."""
+    seen = False
+    for line in lines:
+        for m in NARR.finditer(line):
+            seen = True
+            try:
+                amt = float(m.group(2).replace(",", "")) * NARR_SCALE[m.group(3).lower()]
+            except ValueError:
+                continue
+            for u, k in (("thousands", 1e3), ("millions", 1e6), ("billions", 1e9), ("", 1.0)):
+                if amt and abs(value * k - amt) <= 0.02 * amt:
+                    return u
+    return "MISMATCH" if seen else None
+
+
+NARR_EPS = re.compile(r"\$\s?\(?(\d+\.\d{2})\)?\s*(?:per diluted share|per share,? diluted|diluted earnings per share|per diluted common share)|"
+                      r"diluted (?:earnings|eps|net income|income|loss)[^.$]{0,50}?\$\s?\(?(\d+\.\d{2})", re.I)
+
+
+def eps_check(lines, value):
+    quoted = set()
+    for line in lines:
+        for m in NARR_EPS.finditer(line):
+            quoted.add(float(m.group(1) or m.group(2)))
+    if not quoted:
+        return None
+    return any(abs(abs(value) - q) <= 0.005 for q in quoted)
+
+
 def parse(rec):
     lines = rec.get("head", []) + rec.get("lines", [])
     eps = rev = eps2 = rev2 = None
     eps_label = rev_label = ""
-    unit = None
+    unit, unit_line = None, -999
     unit_at_rev = None
-    eps_ctx = 0  # rows since a "per share" header
-    for line in lines:
+    eps_ctx = 0      # rows since a "per share" header
+    cont_ctx = 0     # rows since a "continuing operations" header
+    years_desc = True
+    for idx, line in enumerate(lines):
         um = UNIT.search(line)
         if um:
             unit = (um.group(1) or um.group(2) or "thousands").lower()
+            unit_line = idx
         label, nums = split_row(line)
         low = label.lower()
+        # header rows with two or more years and no other numbers set the column order
+        yrs = [int(y) for y in YEAR.findall(line)]
+        if len(yrs) >= 2 and all(1980 <= abs(v) <= 2039 for v in nums):
+            years_desc = yrs[0] >= yrs[1]
+            continue
+        if re.search(r"continuing operations", low) and not nums:
+            cont_ctx = 4
+        elif cont_ctx:
+            cont_ctx -= 1
         if re.search(r"(earnings|income|loss).{0,30}per (common |diluted )?share|^eps\b|per share data", low) and not nums:
             eps_ctx = 6
         elif eps_ctx:
             eps_ctx -= 1
+        if not nums:
+            continue
+        cur = nums[0] if years_desc or len(nums) < 2 else nums[1]
+        prv = (nums[1] if years_desc else nums[0]) if len(nums) > 1 else None
         is_table = "|" in line or len(nums) >= 2
-        narrative = len(label) > 70 or re.search(r"expect|guidance|outlook|quarter of|year of|20\d\d|reports|reported", low)
-        if eps is None and nums and is_table and not narrative and "diluted" in low and not EPS_BAD.search(low):
-            if ("per" in low or "share" in low or "eps" in low or eps_ctx) and abs(nums[0]) < 1000:
-                eps, eps_label = nums[0], label[:60]
-                eps2 = nums[1] if len(nums) > 1 else None
-        if rev is None and nums and is_table and REV_ROW.match(low.strip()):
-            if abs(nums[0]) >= 1:
-                rev, rev_label, unit_at_rev = nums[0], label[:60], unit
-                rev2 = nums[1] if len(nums) > 1 else None
+        narrative = (len(label) > 70 or
+                     re.search(r"expect|guidance|outlook|quarter of|year of|20\d\d|reports|reported", low) or
+                     re.search(r"\b(were|was|of|totaled|increased|decreased|compared)$", low))
+        if (eps is None and is_table and not narrative and "diluted" in low and not EPS_BAD.search(low)
+                and not cont_ctx):
+            if ("per" in low or "share" in low or "eps" in low or eps_ctx) and abs(cur) < 100:
+                eps, eps2, eps_label = cur, prv, label[:60]
+        if rev is None and is_table and REV_ROW.match(low.strip()):
+            if abs(cur) >= 1:
+                rev, rev2, rev_label = cur, prv, label[:60]
+                unit_at_rev = unit
+    if eps is not None and eps_check(lines, eps) is False:
+        # the text quotes diluted EPS figures and none equals the table row: drop it
+        eps = eps2 = None
+        eps_label = ""
+    if rev is not None:
+        u = unit_from_text(lines, abs(rev))
+        if u == "MISMATCH":
+            # the text quotes revenue amounts but none equals the table row:
+            # the row is probably not total revenue for the quarter; drop it
+            rev = rev2 = None
+            rev_label = ""
+        elif u is not None:
+            unit_at_rev = u
     return eps, eps_label, rev, rev_label, unit_at_rev, eps2, rev2
 
 
