@@ -8,8 +8,8 @@ class SnipeRDataModuleTest(QCAlgorithm):
     plus spot checks. Examines no returns; not a trial."""
 
     def initialize(self):
-        self.set_start_date(2006, 1, 1)
-        self.set_end_date(2008, 12, 31)
+        self.set_start_date(2003, 1, 1)
+        self.set_end_date(2026, 10, 30)
         self.set_cash(100000)
         self.t0 = time.time()
         self.sd = SniperData(self, use_press=True)
@@ -18,7 +18,7 @@ class SnipeRDataModuleTest(QCAlgorithm):
 
     def select(self, fundamental):
         u = self.sd.u0(fundamental)
-        if self.time.month in (3, 9) and self.time.day <= 7 and (self.time.year, self.time.month) not in self.spot_done:
+        if self.time.year in (2007, 2008) and self.time.month in (3, 9) and self.time.day <= 7 and (self.time.year, self.time.month) not in self.spot_done:
             self.spot_done.add((self.time.year, self.time.month))
             want = {"LEH", "AAPL", "BSC", "WM", "BBBY", "MER"}
             for s in u:

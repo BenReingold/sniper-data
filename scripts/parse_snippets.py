@@ -19,6 +19,10 @@ EPS_BAD = re.compile(r"continu|discontinu|adjust|non-?gaap|pro ?forma|operating|
                      r"weighted|shares|guidance|outlook|estimate|before|cumulative|"
                      r"special|items|segment|dividend|book value|funds from operations|\bffo\b|"
                      r"reconcil|outstanding|comparable|\bcore\b|recurring|normaliz|%", re.I)
+QTR_H = re.compile(r"three months|3 months|quarter|13 weeks|12 weeks|14 weeks|sixteen weeks|16 weeks|\bq[1-4]\b", re.I)
+YTD_H = re.compile(r"six months|nine months|twelve months|6 months|9 months|12 months|year ended|years ended|"
+                   r"fiscal year|full year|year to date|year-to-date|26 weeks|39 weeks|52 weeks|53 weeks|"
+                   r"twenty-six|thirty-nine|fifty-two", re.I)
 YEAR = re.compile(r"\b(19[89]\d|20[0-3]\d)\b")
 REV_ROW = re.compile(r"^(total |consolidated )?(net )?(operating )?(revenues?|sales)(,? net)?"
                      r"( and other income)?\s*:?$|^revenues?,? net$|^net sales and revenues?$|"
@@ -111,6 +115,13 @@ def eps_check(lines, value):
     return any(abs(abs(value) - q) <= 0.005 for q in quoted)
 
 
+def eps_check_any(lines, values):
+    """True when the text quotes a diluted EPS that equals another diluted
+    row of the same column (for example continuing operations): the column
+    choice is then confirmed."""
+    return any(eps_check(lines, v) for v in values)
+
+
 def parse(rec):
     lines = rec.get("head", []) + rec.get("lines", [])
     eps = rev = eps2 = rev2 = None
@@ -120,6 +131,9 @@ def parse(rec):
     eps_ctx = 0      # rows since a "per share" header
     cont_ctx = 0     # rows since a "continuing operations" header
     years_desc = True
+    diluted_cols = set()  # current-column values of every diluted per-share row (incl. continuing ops)
+    block = 0        # which pair of numbers holds the quarter: 0 = first pair, 1 = second pair
+    annual_only = False
     for idx, line in enumerate(lines):
         um = UNIT.search(line)
         if um:
@@ -127,6 +141,16 @@ def parse(rec):
             unit_line = idx
         label, nums = split_row(line)
         low = label.lower()
+        # period header: decides whether the quarter columns come first, second, or not at all
+        qm, ym = QTR_H.search(line), YTD_H.search(line)
+        if (qm or ym) and all(1980 <= abs(v) <= 2039 or (v == int(v) and 0 < v <= 53) for v in nums):
+            if qm and ym:
+                block, annual_only = (0 if qm.start() < ym.start() else 1), False
+            elif qm:
+                block, annual_only = 0, False
+            else:
+                block, annual_only = 0, True
+            continue
         # header rows with two or more years and no other numbers set the column order
         yrs = [int(y) for y in YEAR.findall(line)]
         if len(yrs) >= 2 and all(1980 <= abs(v) <= 2039 for v in nums):
@@ -142,9 +166,16 @@ def parse(rec):
             eps_ctx -= 1
         if not nums:
             continue
-        cur = nums[0] if years_desc or len(nums) < 2 else nums[1]
-        prv = (nums[1] if years_desc else nums[0]) if len(nums) > 1 else None
+        if annual_only:
+            continue
+        pair = nums[2 * block:2 * block + 2] if len(nums) >= 2 * block + 1 else []
+        if not pair:
+            continue
+        cur = pair[0] if years_desc or len(pair) < 2 else pair[1]
+        prv = (pair[1] if years_desc else pair[0]) if len(pair) > 1 else None
         is_table = "|" in line or len(nums) >= 2
+        if is_table and "diluted" in low and ("per" in low or "share" in low) and abs(cur) < 100:
+            diluted_cols.add(round(abs(cur), 2))
         narrative = (len(label) > 70 or
                      re.search(r"expect|guidance|outlook|quarter of|year of|20\d\d|reports|reported", low) or
                      re.search(r"\b(were|was|of|totaled|increased|decreased|compared)$", low))
@@ -156,7 +187,7 @@ def parse(rec):
             if abs(cur) >= 1:
                 rev, rev2, rev_label = cur, prv, label[:60]
                 unit_at_rev = unit
-    if eps is not None and eps_check(lines, eps) is False:
+    if eps is not None and eps_check(lines, eps) is False and not eps_check_any(lines, diluted_cols):
         # the text quotes diluted EPS figures and none equals the table row: drop it
         eps = eps2 = None
         eps_label = ""
