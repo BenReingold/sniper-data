@@ -25,7 +25,9 @@ jobs:
           ls -l /tmp/companyfacts.zip
 
       - name: Build tables
-        run: python3 scripts/build_xbrl_facts.py /tmp/companyfacts.zip fundamentals
+        run: |
+          python3 scripts/build_xbrl_facts.py /tmp/companyfacts.zip fundamentals
+          python3 scripts/build_quarters.py
 
       - name: Commit if changed
         run: |
