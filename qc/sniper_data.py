@@ -1,0 +1,296 @@
+"""SnipeR data module for QuantConnect (copy this file into a project and
+`from sniper_data import SniperData`).
+
+What it gives a backtest, point in time (only what was known that day):
+- u0(fundamental): the U0 universe (U.S. common stocks on NYSE / Nasdaq /
+  NYSE American, close >= 5 USD, 50-day average dollar volume >= 5M USD,
+  252+ sessions seen, delisted included). Call it from the universe
+  selection EVERY day; start the backtest at least one year before the
+  first date you analyse (warm-up for the 252-session rule).
+- cik(symbol): SEC company id. Morningstar CIK, else the ticker printed in
+  8-K item 2.02 press releases (date-by-date within 400 days; else the one
+  CIK that printed the ticker during the symbol's life). Rules: DECISIONS
+  2026-11-12 and DECISIONS_ADDENDUM 2026-11-14.
+- quarters(symbol, n): last n fiscal quarters known that day, newest first,
+  from fundamentals/quarters.csv (XBRL, derived Q4, press releases), each
+  available from the day after its earnings announcement.
+- yoy(symbol, field): year-over-year growth of "eps" or "revenue" of the
+  latest known quarter.
+- days_since_announcement(symbol): calendar days since the last 8-K 2.02.
+- report(): per-year coverage lines (call from on_end_of_algorithm).
+Tables: https://github.com/BenReingold/sniper-data (SEC data only).
+"""
+
+from AlgorithmImports import *
+import bisect
+import csv
+import io
+from collections import deque
+from datetime import date
+
+BASE = "https://raw.githubusercontent.com/BenReingold/sniper-data/main/"
+EXCH = {"NAS", "NYS", "NYSE", "ASE", "AMEX"}
+COMMON = "ST00000001"
+
+
+def _o(s):
+    try:
+        return date(int(s[0:4]), int(s[5:7]), int(s[8:10])).toordinal()
+    except Exception:
+        return None
+
+
+def _f(s):
+    try:
+        v = float(s)
+        return v if v == v else None
+    except Exception:
+        return None
+
+
+class SniperData:
+    def __init__(self, algo, use_press=True, min_price=5.0, min_dollar_volume=5e6,
+                 min_sessions=252, dv_window=50, base=BASE):
+        self.algo = algo
+        self.use_press = use_press
+        self.min_price = min_price
+        self.min_dv = min_dollar_volume
+        self.min_sessions = min_sessions
+        self.dv_window = dv_window
+        self.base = base
+        self.st = {}            # symbol id -> state
+        self.by_symbol = {}     # Symbol -> symbol id
+        self.cov = {}           # year -> counters
+        self.last_month = None
+        self._load()
+
+    # ------------------------------------------------------------------ load
+    def _rows(self, path):
+        return csv.DictReader(io.StringIO(self.algo.download(self.base + path)))
+
+    def _load(self):
+        self.ann = {}
+        for r in self._rows("earnings_dates/8k_202.csv"):
+            v = _o(r["filing_date"])
+            if v:
+                self.ann.setdefault(r["cik"], []).append(v)
+        for v in self.ann.values():
+            v.sort()
+
+        self.tk, cnt = {}, {}
+        for r in self._rows("earnings_dates/cik_tickers.csv"):
+            t = (r["ticker"] or "").replace(".", "")
+            v = _o(r["filing_date"])
+            if t and v and len(t) > 1:
+                self.tk.setdefault(t, []).append((v, r["cik"]))
+                cnt[(r["cik"], t)] = cnt.get((r["cik"], t), 0) + 1
+        for t in list(self.tk):
+            # a press-release ticker counts only if the CIK printed it twice
+            lst = sorted(x for x in self.tk[t] if cnt.get((x[1], t), 0) >= 2)
+            if lst:
+                self.tk[t] = lst
+            else:
+                del self.tk[t]
+
+        self.q = {}
+        for r in self._rows("fundamentals/quarters.csv"):
+            if r["source"] == "P" and not self.use_press:
+                continue
+            av = _o(r["available"])
+            if av is None:
+                continue
+            self.q.setdefault(r["cik"], []).append((
+                av, _o(r["announce"]) if r["announce"] else None,
+                _o(r["period_end"]) if r["period_end"] else None,
+                _f(r["eps"]), _f(r["eps_prev"]), _f(r["revenue"]), _f(r["rev_prev"]), r["source"]))
+        for v in self.q.values():
+            v.sort(key=lambda x: x[0])
+        self.qa = {c: [x[0] for x in v] for c, v in self.q.items()}
+        self.algo.log(f"SniperData loaded: announcements={sum(map(len, self.ann.values()))} "
+                      f"tickers={len(self.tk)} quarter_ciks={len(self.q)} press={self.use_press}")
+
+    # -------------------------------------------------------------- identity
+    def _today(self):
+        return self.algo.time.date().toordinal()
+
+    def _ticker_cik(self, t, today, first):
+        lst = self.tk.get(t.replace(".", ""))
+        if not lst:
+            return None, None
+        i = bisect.bisect_left(lst, (today, ""))
+        best = None
+        for j in (i - 1, i):
+            if 0 <= j < len(lst):
+                gap = abs(lst[j][0] - today)
+                if gap <= 400 and (best is None or gap < best[0]):
+                    best = (gap, lst[j][1])
+        if best:
+            return best[1], "TICKER"
+        life = {c for v, c in lst if v >= first - 400}
+        if len(life) == 1:
+            return life.pop(), "LIFE"
+        return None, None
+
+    def _state(self, f, today):
+        sid = str(f.symbol.id)
+        s = self.st.get(sid)
+        if s is None:
+            s = {"first": today, "n": 0, "dv": deque(maxlen=self.dv_window), "dvsum": 0.0,
+                 "cik": None, "how": None, "checked": None, "sym": f.symbol}
+            self.st[sid] = s
+            self.by_symbol[f.symbol] = sid
+        return s
+
+    def _identify(self, f, s, today):
+        if s["checked"] is not None and today - s["checked"] < 30 and s["how"] != "MS":
+            return
+        c = None
+        try:
+            c0 = f.company_reference.cik
+            c = str(int(c0)) if c0 else None
+        except Exception:
+            c = None
+        if c:
+            s["cik"], s["how"] = c, "MS"
+        else:
+            s["cik"], s["how"] = self._ticker_cik(f.symbol.value, today, s["first"])
+        s["checked"] = today
+
+    def cik(self, symbol):
+        sid = self.by_symbol.get(symbol)
+        return self.st[sid]["cik"] if sid else None
+
+    # -------------------------------------------------------------- universe
+    def u0(self, fundamental):
+        today = self._today()
+        y = self.algo.time.year
+        month = (y, self.algo.time.month)
+        sample = month != self.last_month
+        self.last_month = month
+        c = self.cov.setdefault(y, {}) if sample else None
+        out = []
+        for f in fundamental:
+            s = self._state(f, today)
+            dv = f.dollar_volume or 0.0
+            if len(s["dv"]) == s["dv"].maxlen:
+                s["dvsum"] -= s["dv"][0]
+            s["dv"].append(dv)
+            s["dvsum"] += dv
+            s["n"] += 1
+            if f.price < self.min_price or len(s["dv"]) < self.dv_window or \
+                    s["dvsum"] / len(s["dv"]) < self.min_dv:
+                continue
+            ex = st = None
+            try:
+                ex = f.security_reference.exchange_id
+                st = f.security_reference.security_type
+            except Exception:
+                pass
+            if ex and ex not in EXCH:
+                continue
+            self._identify(f, s, today)
+            reason = None
+            if ex and st != COMMON:
+                reason = "not_common"
+            elif not ex and not s["cik"]:
+                reason = "unidentified"
+            elif s["n"] < self.min_sessions:
+                reason = "short_history"
+            if sample:
+                c["candidates"] = c.get("candidates", 0) + 1
+                if reason:
+                    c[reason] = c.get(reason, 0) + 1
+            if reason:
+                continue
+            out.append(f.symbol)
+            if sample:
+                self._count(c, s, today, bool(ex))
+        return out
+
+    def _count(self, c, s, today, has_ms):
+        def add(k):
+            c[k] = c.get(k, 0) + 1
+        add("u0")
+        add("ms" if has_ms else "no_ms")
+        if s["how"]:
+            add("cik_" + s["how"])
+        else:
+            add("no_cik")
+        lq = self._latest(s["cik"], today) if s["cik"] else None
+        if lq and today - lq[0] <= 200:
+            add("q_" + lq[7])
+        else:
+            add("q_none")
+        la = self._last_ann(s["cik"], today) if s["cik"] else None
+        add("ann_120d" if la and today - la <= 120 else "ann_none")
+
+    # ---------------------------------------------------------- fundamentals
+    def _latest(self, cik, today):
+        lst = self.q.get(cik)
+        if not lst:
+            return None
+        i = bisect.bisect_right(self.qa[cik], today) - 1
+        return lst[i] if i >= 0 else None
+
+    def quarters(self, symbol, n=8):
+        """Last n quarters known today, newest first: dicts with available,
+        announce, period_end (ordinals or None), eps, revenue, source."""
+        c = self.cik(symbol)
+        lst = self.q.get(c) if c else None
+        if not lst:
+            return []
+        today = self._today()
+        i = bisect.bisect_right(self.qa[c], today)
+        out, seen = [], set()
+        for x in reversed(lst[:i]):
+            key = x[2] or x[1]
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({"available": x[0], "announce": x[1], "period_end": x[2], "eps": x[3],
+                        "eps_prev": x[4], "revenue": x[5], "rev_prev": x[6], "source": x[7]})
+            if len(out) >= n:
+                break
+        return out
+
+    def yoy(self, symbol, field="eps"):
+        """Growth of the latest known quarter against the same quarter a year
+        earlier. XBRL rows carry the prior-year value; for press rows the
+        quarter announced 330-400 days earlier is used."""
+        qs = self.quarters(symbol, 6)
+        if not qs:
+            return None
+        cur = qs[0]
+        now = cur[field]
+        prev = cur[field + "_prev" if field == "eps" else "rev_prev"] if cur["source"] != "P" else None
+        if prev is None and cur["announce"]:
+            for x in qs[1:]:
+                if x["announce"] and 330 <= cur["announce"] - x["announce"] <= 400:
+                    prev = x[field]
+                    break
+        if now is None or prev is None or prev == 0:
+            return None
+        return now / abs(prev) - 1 if prev > 0 else (now - prev) / abs(prev)
+
+    # --------------------------------------------------------- announcements
+    def _last_ann(self, cik, today):
+        lst = self.ann.get(cik)
+        if not lst:
+            return None
+        i = bisect.bisect_left(lst, today) - 1   # filed before today: known today
+        return lst[i] if i >= 0 else None
+
+    def days_since_announcement(self, symbol):
+        c = self.cik(symbol)
+        la = self._last_ann(c, self._today()) if c else None
+        return self._today() - la if la else None
+
+    # ----------------------------------------------------------------- report
+    def report(self):
+        keys = ["candidates", "u0", "not_common", "unidentified", "short_history", "ms", "no_ms",
+                "cik_MS", "cik_TICKER", "cik_LIFE", "no_cik", "q_X", "q_XD", "q_P", "q_none",
+                "ann_120d", "ann_none"]
+        self.algo.log("SniperData coverage (first trading day of each month, summed per year): " + ",".join(keys))
+        for y in sorted(self.cov):
+            c = self.cov[y]
+            self.algo.log(f"SniperData {y}: " + ",".join(str(c.get(k, 0)) for k in keys))
