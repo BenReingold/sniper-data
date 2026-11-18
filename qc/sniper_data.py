@@ -19,8 +19,11 @@ What it gives a backtest, point in time (only what was known that day):
 - days_since_announcement(symbol): calendar days since the last 8-K 2.02.
 - sp500(fundamental): S&P 500 members that day as QuantConnect symbols, from
   the public daily list (index_membership/, fja05680, MIT licence), matched
-  by ticker, then by later-ticker aliases (bankruptcy Q suffix, FNMA, FMCC),
-  then by CIK. Agreement with SPY constituents: 96% 2010-2012, 98-99% later.
+  by ticker (dated old-ticker preferences first, BEFORE), then by later-ticker
+  aliases (bankruptcy Q suffix, FNMA, FMCC), then by CIK, plus members the
+  list loses to ticker collisions (COLLIDE). Checked against SPY constituents
+  (from 2009-08) and SEC-filed SPDR holdings 2000, 2004, 2007
+  (D10_CHECK_2026-11-18.md in the SnipeR project).
 - report(): per-year coverage lines (call from on_end_of_algorithm).
 Tables: https://github.com/BenReingold/sniper-data (SEC data only).
 """
@@ -307,15 +310,60 @@ class SniperData:
         "OMX": ["BCC"], "OWENQ": ["OWC"], "PGN": ["CPL"], "PHA": ["PNU"], "RDSA": ["RD"],
         "RSHCQ": ["RSH", "TAN"], "RYI": ["RT"], "S": ["FON"], "SAF": ["SAFC"], "SGID": ["SGI"],
         "TGT": ["DH"], "TMCA": ["TMC"], "TWX": ["AOL"], "UAWGQ": ["U"], "WAMUQ": ["WM"],
-        "WCOEQ": ["WCOM"], "ANDV": ["TSO"], "BTUUQ": ["BTU"], "CITGQ": ["CIT"], "ABKFQ": ["ABK"],
+        "WCOEQ": ["WCOM"], "ANDV": ["TSO"], "BTUUQ": ["BTU", "BTUW"], "CITGQ": ["CIT"], "ABKFQ": ["ABK"],
         "CPNLQ": ["CPN"], "DPHIQ": ["DPH"], "FTR": ["CZN"], "LDOS": ["SAI"], "ATGE": ["DV"],
         "LEHMQ": ["LEH"], "VSTNQ": ["VC"], "WNDXQ": ["WIN"], "TT": ["ASD"], "TPR": ["COH"],
         "IAC": ["IACI"], "WYND": ["WYN"], "SUNEQ": ["WFR"], "ES": ["NU"], "LB": ["LTD"],
         "ANRZQ": ["ANR"], "AFSA": ["AFS"], "CITA": ["CIT"], "EP": ["EPG"], "GX": ["GBLX"],
+        "WYE": ["AHP"], "SXCL": ["ADPT"], "AGN": ["ACT"],
     }
     # Tickers that the public list gives to a company which, before the date,
-    # traded under another ticker while a different company held this one.
-    BEFORE = {"WM": (date(2008, 11, 1).toordinal(), "WMI")}
+    # traded under another ticker while a different company may have held
+    # this one. Before the date the old tickers are tried first (if one trades
+    # that day and is not taken); otherwise the list ticker is used directly.
+    # Dates are Claude's [S] (a later date is safe: once the old ticker stops
+    # trading the direct match is used). Added 2026-11-18 after the check of
+    # D10_CHECK_2026-11-18.md: the direct match had picked other companies
+    # (Liberty Media for L, PAR Technology for PTC, Jefferies for JEF, ...).
+    BEFORE = {
+        "WM": (date(2008, 11, 1).toordinal(), ["WMI"]),
+        "L": (date(2009, 1, 1).toordinal(), ["LTR"]),
+        "LB": (date(2013, 4, 1).toordinal(), ["LTD"]),
+        "MS": (date(2008, 1, 1).toordinal(), ["MWD"]),
+        "MSI": (date(2011, 1, 5).toordinal(), ["MOT"]),
+        "PTC": (date(2013, 2, 1).toordinal(), ["PMTC"]),
+        "SAF": (date(2008, 9, 23).toordinal(), ["SAFC"]),
+        "TT": (date(2007, 8, 1).toordinal(), ["ASD"]),
+        "ABI": (date(2001, 1, 1).toordinal(), ["PEB", "PKN"]),
+        "COP": (date(2002, 9, 1).toordinal(), ["P"]),
+        "CMI": (date(2001, 6, 1).toordinal(), ["CUM"]),
+        "CAR": (date(2006, 9, 1).toordinal(), ["CD"]),
+        "JEF": (date(2018, 5, 24).toordinal(), ["LUK"]),
+        "OMX": (date(2004, 11, 1).toordinal(), ["BCC"]),
+        "ES": (date(2015, 5, 1).toordinal(), ["NU"]),
+    }
+    # S&P 500 members missing from the public list because two members of
+    # the time later share one ticker (duplicate removed in the list): added
+    # by their ticker at the time while it trades, inside [start, end).
+    # Found by the SPDR (SPY) holdings check of 2000, 2004, 2007
+    # (D10_CHECK_2026-11-18.md). End dates: merger or removal dates
+    # (Claude's knowledge [S]; ACE from S&P announcements). Start dates are
+    # 1996 for long-time members; where the entry date is not known the
+    # first SPDR date that confirms membership is used [S], so the years
+    # before it stay missing rather than wrong.
+    COLLIDE = [
+        (["FON"], date(1996, 1, 2), date(2005, 8, 12)),     # Sprint (list: S = Sears)
+        (["SBC"], date(1996, 1, 2), date(2005, 11, 18)),    # SBC (list: T = AT&T Corp)
+        (["TYC"], date(1996, 1, 2), date(2016, 9, 3)),      # Tyco (list: JCI); merger closed 2016-09-02
+        (["WPI", "ACT"], date(2000, 9, 29), date(2015, 3, 17)),  # Watson/Actavis (list: AGN)
+        (["ACE"], date(2004, 9, 30), date(2008, 7, 18)),    # ACE (list: CB); removed 2008-07-17
+        (["ACE"], date(2010, 7, 15), date(2016, 1, 14)),    # ACE re-added after close 2010-07-14
+        (["AOL"], date(2000, 9, 29), date(2001, 1, 12)),    # AOL (list: TWX)
+        (["CMB"], date(1996, 1, 2), date(2001, 1, 1)),      # Chase Manhattan (list: JPM)
+        (["FTU"], date(1996, 1, 2), date(2001, 9, 4)),      # First Union (list: WB)
+        (["FSR"], date(1999, 1, 4), date(2001, 2, 28)),     # Firstar (list: USB)
+        (["PE"], date(1996, 1, 2), date(2000, 10, 20)),     # PECO (list: EXC, via UCM)
+    ]
 
     def _load_sp500(self):
         self.sp_dates, self.sp_lists = [], []
@@ -353,10 +401,22 @@ class SniperData:
                 by_c[st["cik"]] = st["sym"]
         out, self.sp_missing, self.sp_alias_used = set(), [], []
         later = []
+        listed = {self._norm(t) for t in self.sp_lists[i]}
         for t in self.sp_lists[i]:
             n = self._norm(t)
+            s = None
             pre = self.BEFORE.get(n)
-            s = by_t.get(pre[1]) if pre and today < pre[0] else by_t.get(n)
+            if pre and today < pre[0]:
+                for a in pre[1]:
+                    cand = by_t.get(a)
+                    if cand is not None and cand not in out and a not in listed:
+                        s = cand
+                        self.sp_alias_used.append(f"{t}>{a}")
+                        break
+            if s is None:
+                s = by_t.get(n)
+                if s is not None and s in out:
+                    s = None
             if s is None:
                 later.append((t, n))
             else:
@@ -378,6 +438,15 @@ class SniperData:
                 self.sp_missing.append(t)
             else:
                 out.add(s)
+        d = date.fromordinal(today)
+        for tickers, a, b in self.COLLIDE:
+            if a <= d < b:
+                for x in tickers:
+                    cand = by_t.get(x)
+                    if cand is not None and cand not in out:
+                        out.add(cand)
+                        self.sp_alias_used.append(f"+{x}")
+                        break
         return out
 
     # ----------------------------------------------------------------- report
