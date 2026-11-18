@@ -17,6 +17,10 @@ What it gives a backtest, point in time (only what was known that day):
 - yoy(symbol, field): year-over-year growth of "eps" or "revenue" of the
   latest known quarter.
 - days_since_announcement(symbol): calendar days since the last 8-K 2.02.
+- sp500(fundamental): S&P 500 members that day as QuantConnect symbols, from
+  the public daily list (index_membership/, fja05680, MIT licence), matched
+  by ticker, then by later-ticker aliases (bankruptcy Q suffix, FNMA, FMCC),
+  then by CIK. Agreement with SPY constituents: 96% 2010-2012, 98-99% later.
 - report(): per-year coverage lines (call from on_end_of_algorithm).
 Tables: https://github.com/BenReingold/sniper-data (SEC data only).
 """
@@ -284,6 +288,62 @@ class SniperData:
         c = self.cik(symbol)
         la = self._last_ann(c, self._today()) if c else None
         return self._today() - la if la else None
+
+    # ---------------------------------------------------------------- S&P 500
+    ALIAS = {"FNMA": "FNM", "FMCC": "FRE", "AABA": "YHOO"}
+
+    def _load_sp500(self):
+        self.sp_dates, self.sp_lists = [], []
+        for r in self._rows("index_membership/sp500_daily_fja05680.csv"):
+            self.sp_dates.append(_o(r["date"]))
+            self.sp_lists.append(r["tickers"].split(","))
+        self.sp_cik = {}
+        for r in self._rows("index_membership/sp500_cik_intervals.csv"):
+            self.sp_cik.setdefault(self._norm(r["ticker"]), []).append(
+                (_o(r["start"]), _o(r["end"]) if r["end"] else 10 ** 7, r["cik"]))
+
+    @staticmethod
+    def _norm(t):
+        return t.replace(".", "").replace("-", "").replace(" ", "").upper()
+
+    def sp500(self, fundamental):
+        """Set of Symbols in the S&P 500 today (public list, see module notes)."""
+        if not hasattr(self, "sp_dates"):
+            self._load_sp500()
+        today = self._today()
+        i = bisect.bisect_right(self.sp_dates, today) - 1
+        if i < 0:
+            return set()
+        by_t, by_c = {}, {}
+        for f in fundamental:
+            by_t.setdefault(self._norm(f.symbol.value), f.symbol)
+            try:
+                c0 = f.company_reference.cik
+                if c0:
+                    by_c[str(int(c0))] = f.symbol
+            except Exception:
+                pass
+        for sid, st in self.st.items():
+            if st["cik"] and st["cik"] not in by_c:
+                by_c[st["cik"]] = st["sym"]
+        out, self.sp_missing = set(), []
+        for t in self.sp_lists[i]:
+            n = self._norm(t)
+            s = by_t.get(n)
+            if s is None and n in self.ALIAS:
+                s = by_t.get(self.ALIAS[n])
+            if s is None and len(n) >= 4 and n.endswith("Q"):
+                s = by_t.get(n[:-1])
+            if s is None:
+                for a, b, c in self.sp_cik.get(n, []):
+                    if a - 5 <= today <= b + 5 and c in by_c:
+                        s = by_c[c]
+                        break
+            if s is None:
+                self.sp_missing.append(t)
+            else:
+                out.add(s)
+        return out
 
     # ----------------------------------------------------------------- report
     def report(self):
