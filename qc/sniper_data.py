@@ -309,7 +309,13 @@ class SniperData:
         "TGT": ["DH"], "TMCA": ["TMC"], "TWX": ["AOL"], "UAWGQ": ["U"], "WAMUQ": ["WM"],
         "WCOEQ": ["WCOM"], "ANDV": ["TSO"], "BTUUQ": ["BTU"], "CITGQ": ["CIT"], "ABKFQ": ["ABK"],
         "CPNLQ": ["CPN"], "DPHIQ": ["DPH"], "FTR": ["CZN"], "LDOS": ["SAI"], "ATGE": ["DV"],
+        "LEHMQ": ["LEH"], "VSTNQ": ["VC"], "WNDXQ": ["WIN"], "TT": ["ASD"], "TPR": ["COH"],
+        "IAC": ["IACI"], "WYND": ["WYN"], "SUNEQ": ["WFR"], "ES": ["NU"], "LB": ["LTD"],
+        "ANRZQ": ["ANR"], "AFSA": ["AFS"], "CITA": ["CIT"], "EP": ["EPG"], "GX": ["GBLX"],
     }
+    # Tickers that the public list gives to a company which, before the date,
+    # traded under another ticker while a different company held this one.
+    BEFORE = {"WM": (date(2008, 11, 1).toordinal(), "WMI")}
 
     def _load_sp500(self):
         self.sp_dates, self.sp_lists = [], []
@@ -349,7 +355,8 @@ class SniperData:
         later = []
         for t in self.sp_lists[i]:
             n = self._norm(t)
-            s = by_t.get(n)
+            pre = self.BEFORE.get(n)
+            s = by_t.get(pre[1]) if pre and today < pre[0] else by_t.get(n)
             if s is None:
                 later.append((t, n))
             else:
