@@ -131,6 +131,7 @@ def parse(rec):
     eps_ctx = 0      # rows since a "per share" header
     cont_ctx = 0     # rows since a "continuing operations" header
     years_desc = True
+    last_ps = -99    # last line that mentions "per share"
     diluted_cols = set()  # current-column values of every diluted per-share row (incl. continuing ops)
     block = 0        # which pair of numbers holds the quarter: 0 = first pair, 1 = second pair
     annual_only = False
@@ -143,7 +144,9 @@ def parse(rec):
         low = label.lower()
         # period header: decides whether the quarter columns come first, second, or not at all
         qm, ym = QTR_H.search(line), YTD_H.search(line)
-        if (qm or ym) and all(1980 <= abs(v) <= 2039 or (v == int(v) and 0 < v <= 53) for v in nums):
+        if re.search(r"per (common |diluted )?share|earnings per|\beps\b", line, re.I):
+            last_ps = idx
+        if (qm or ym) and len(line) < 110 and all(1980 <= abs(v) <= 2039 or (v == int(v) and 0 < v <= 53) for v in nums):
             if qm and ym:
                 block, annual_only = (0 if qm.start() < ym.start() else 1), False
             elif qm:
@@ -181,7 +184,7 @@ def parse(rec):
                      re.search(r"\b(were|was|of|totaled|increased|decreased|compared)$", low))
         if (eps is None and is_table and not narrative and "diluted" in low and not EPS_BAD.search(low)
                 and not cont_ctx):
-            if ("per" in low or "share" in low or "eps" in low or eps_ctx) and abs(cur) < 100:
+            if ("per" in low or "share" in low or "eps" in low or eps_ctx or idx - last_ps <= 8) and abs(cur) < 100:
                 eps, eps2, eps_label = cur, prv, label[:60]
         if rev is None and is_table and REV_ROW.match(low.strip()):
             if abs(cur) >= 1:
