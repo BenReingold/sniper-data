@@ -27,7 +27,9 @@ class SnipeRSp500Test(QCAlgorithm):
             return Universe.UNCHANGED
         self.done.add(y)
         m = self.sd.sp500(fundamental)
-        line = f"SP {self.time.date()} matched={len(m)} missing={len(self.sd.sp_missing)} ex={' '.join(self.sd.sp_missing[:10])}"
+        line = f"SP {self.time.date()} matched={len(m)} missing={len(self.sd.sp_missing)} alias={len(self.sd.sp_alias_used)} ex={' '.join(self.sd.sp_missing[:10])}"
+        if y in (2000, 2005):
+            self.log("ALIAS " + str(self.time.date()) + " " + " ".join(self.sd.sp_alias_used))
         if self.etf:
             line += f" | spy={len(self.etf)} both={len(self.etf & m)} only_spy={len(self.etf - m)} only_list={len(m - self.etf)}"
         self.log(line)

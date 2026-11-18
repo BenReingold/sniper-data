@@ -290,7 +290,26 @@ class SniperData:
         return self._today() - la if la else None
 
     # ---------------------------------------------------------------- S&P 500
-    ALIAS = {"FNMA": "FNM", "FMCC": "FRE", "AABA": "YHOO"}
+    # Later ticker in the public list -> tickers the company used at the time
+    # (tried in order; a candidate is used only if it trades that day and is
+    # not already taken by another member). Built 2026-11-18 from the list of
+    # unmatched members 1998-2010; from Claude's knowledge, checked by the
+    # match test, see index_membership/README.md.
+    ALIAS = {
+        "FNMA": ["FNM"], "FMCC": ["FRE"], "AABA": ["YHOO"], "AAMRQ": ["AMR"], "ABI": ["PKN", "PEB"],
+        "ACKH": ["ACK"], "ARNC": ["AA"], "AZAA": ["AZA"], "BBT": ["BBK"], "BHGE": ["BHI"],
+        "BHMSQ": ["BS"], "BMGCA": ["BMG"], "CBS": ["VIAB", "VIA"], "CCTYQ": ["CC"], "CEG": ["BGE"],
+        "CFC": ["CCR"], "CNP": ["HOU", "REI"], "DALRQ": ["DAL"], "DCNAQ": ["DCN"], "DXC": ["CSC"],
+        "EKDKQ": ["EK"], "ENRNQ": ["ENE"], "ETS": ["CS"], "EXC": ["UCM"], "FBF": ["FLT"],
+        "FLTWQ": ["FLE"], "FTLA": ["FTL"], "FWLT": ["FW"], "GAPTQ": ["GAP"], "HCA": ["COL"],
+        "HSH": ["SLE"], "INCLF": ["N"], "L": ["LTR"], "LDWB": ["LDW"], "MEE": ["FLR"],
+        "MS": ["MWD"], "MSI": ["MOT"], "MTLQQ": ["GM"], "NEE": ["FPL"], "NRTLQ": ["NT"],
+        "OMX": ["BCC"], "OWENQ": ["OWC"], "PGN": ["CPL"], "PHA": ["PNU"], "RDSA": ["RD"],
+        "RSHCQ": ["RSH", "TAN"], "RYI": ["RT"], "S": ["FON"], "SAF": ["SAFC"], "SGID": ["SGI"],
+        "TGT": ["DH"], "TMCA": ["TMC"], "TWX": ["AOL"], "UAWGQ": ["U"], "WAMUQ": ["WM"],
+        "WCOEQ": ["WCOM"], "ANDV": ["TSO"], "BTUUQ": ["BTU"], "CITGQ": ["CIT"], "ABKFQ": ["ABK"],
+        "CPNLQ": ["CPN"], "DPHIQ": ["DPH"], "FTR": ["CZN"], "LDOS": ["SAI"], "ATGE": ["DV"],
+    }
 
     def _load_sp500(self):
         self.sp_dates, self.sp_lists = [], []
@@ -326,14 +345,23 @@ class SniperData:
         for sid, st in self.st.items():
             if st["cik"] and st["cik"] not in by_c:
                 by_c[st["cik"]] = st["sym"]
-        out, self.sp_missing = set(), []
+        out, self.sp_missing, self.sp_alias_used = set(), [], []
+        later = []
         for t in self.sp_lists[i]:
             n = self._norm(t)
             s = by_t.get(n)
-            if s is None and n in self.ALIAS:
-                s = by_t.get(self.ALIAS[n])
-            if s is None and len(n) >= 4 and n.endswith("Q"):
-                s = by_t.get(n[:-1])
+            if s is None:
+                later.append((t, n))
+            else:
+                out.add(s)
+        for t, n in later:
+            s = None
+            for a in self.ALIAS.get(n, []):
+                cand = by_t.get(a)
+                if cand is not None and cand not in out:
+                    s = cand
+                    self.sp_alias_used.append(f"{t}>{a}")
+                    break
             if s is None:
                 for a, b, c in self.sp_cik.get(n, []):
                     if a - 5 <= today <= b + 5 and c in by_c:
